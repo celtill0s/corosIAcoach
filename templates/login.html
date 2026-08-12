@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>COROS Data — Connexion</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="center-box">
+    <h1>COROS Data</h1>
+    <p class="subtitle">Connecte-toi avec ton compte COROS Training Hub pour récupérer tes données.</p>
+
+    <form id="login-form">
+      <label>E-mail
+        <input type="email" id="email" required autocomplete="username">
+      </label>
+      <label>Mot de passe
+        <input type="password" id="password" required autocomplete="current-password">
+      </label>
+      <button type="submit" id="submit-btn">Se connecter et récupérer mes données</button>
+    </form>
+
+    <div id="status" class="status"></div>
+
+    {% if has_data %}
+    <p class="secondary-link"><a href="/dashboard">Voir les dernières données sans re-scraper</a></p>
+    {% endif %}
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
