@@ -2,15 +2,30 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<title>COROS Data — Dashboard</title>
+<title>COROS Data — Aperçu design (hors ligne)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="static/style.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<style>
+  .preview-banner {
+    background: #ffb454;
+    color: #1a1200;
+    text-align: center;
+    padding: 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+</style>
 </head>
 <body>
+  <div class="preview-banner">
+    Aperçu statique hors ligne — données d'exemple figées (preview_data.js), pas de vraie connexion.
+    Ouvrir directement ce fichier dans le navigateur, pas besoin du serveur Flask.
+  </div>
+
   <div class="dashboard">
     <header>
       <h1>Mes données COROS</h1>
@@ -212,6 +227,19 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="preview_data.js"></script>
+  <script>
+    // Intercepts the same fetch() calls app.js makes, so the exact real rendering
+    // code runs unmodified against a frozen data snapshot — no server, no login.
+    window.fetch = function (url) {
+      const respond = (obj) => Promise.resolve(new Response(JSON.stringify(obj), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      }));
+      if (typeof url === "string" && url.startsWith("/api/data")) return respond(window.__PREVIEW_DATA__);
+      if (typeof url === "string" && url.startsWith("/api/analyse")) return respond(window.__PREVIEW_ANALYSE__);
+      return Promise.reject(new Error("Réseau désactivé dans l'aperçu statique."));
+    };
+  </script>
+  <script src="static/app.js"></script>
 </body>
 </html>

@@ -3,12 +3,19 @@
 <head>
 <meta charset="utf-8">
 <title>COROS Data — Connexion</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <div class="center-box">
     <h1>COROS Data</h1>
-    <p class="subtitle">Connecte-toi avec ton compte COROS Training Hub pour récupérer tes données.</p>
+    <p class="subtitle">
+      Connecte-toi avec ton compte COROS Training Hub pour récupérer tes données
+      (scraping + MCP officiel COROS pour le sommeil, le stress et les vraies
+      prédictions de course).
+    </p>
 
     <form id="login-form">
       <label>E-mail
@@ -25,6 +32,13 @@
     {% if has_data %}
     <p class="secondary-link"><a href="/dashboard">Voir les dernières données sans re-scraper</a></p>
     {% endif %}
+  </div>
+
+  <div id="loading-overlay" class="loading-overlay" hidden>
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <div class="loading-message" id="loading-message"></div>
+    </div>
   </div>
 
   <script src="/static/app.js"></script>

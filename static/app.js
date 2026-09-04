@@ -1,3 +1,29 @@
+// Mirrors the CSS custom properties in style.css — Chart.js needs real color
+// values, it can't read CSS variables directly.
+const COLOR_ACCENT = "#ff6a3d"; // warm — effort, charge, action
+const COLOR_COOL = "#4fd6e8";   // cool — récupération, sommeil, VFC
+const COLOR_GOOD = "#3ddc97";
+const COLOR_WARN = "#ffb454";
+const COLOR_BAD = "#ff5470";
+const COLOR_MUTED = "#8b93a7";
+const COLOR_GRID = "rgba(255, 255, 255, 0.06)";
+
+if (typeof Chart !== "undefined") {
+  Chart.defaults.font.family = "'Manrope', sans-serif";
+  Chart.defaults.color = COLOR_MUTED;
+  Chart.defaults.borderColor = COLOR_GRID;
+}
+
+const ICONS = {
+  trendingUp: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,17 9,11 13,15 21,7"/><polyline points="15,7 21,7 21,13"/></svg>',
+  target: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="0.8" fill="currentColor"/></svg>',
+  bolt: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="13,2 4,14 11,14 10,22 20,10 13,10"/></svg>',
+  pulse: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,12 7,12 9,6 13,18 15,12 22,12"/></svg>',
+  battery: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="17" height="10" rx="2"/><line x1="22" y1="10" x2="22" y2="14"/></svg>',
+  moon: '<svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="currentColor"/><circle cx="16.5" cy="8.5" r="7" fill="var(--panel)"/></svg>',
+  wave: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12c2 -5 4 -5 6 0s4 5 6 0 4 -5 6 0"/></svg>',
+};
+
 const SPORT_LABELS = {
   100: "Course",
   102: "Trail",
@@ -31,9 +57,31 @@ function ymdString(date) {
   return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
 }
 
+function formatChartDate(yyyymmdd) {
+  const s = String(yyyymmdd);
+  return `${s.slice(6, 8)}/${s.slice(4, 6)}`;
+}
+
+function formatFullDate(yyyymmdd) {
+  const s = String(yyyymmdd);
+  return `${s.slice(6, 8)}/${s.slice(4, 6)}/${s.slice(0, 4)}`;
+}
+
 function setStatus(el, message, kind) {
   el.textContent = message;
   el.className = "status" + (kind ? " " + kind : "");
+}
+
+function showLoading(message) {
+  const overlay = document.getElementById("loading-overlay");
+  if (!overlay) return;
+  document.getElementById("loading-message").textContent = message;
+  overlay.hidden = false;
+}
+
+function hideLoading() {
+  const overlay = document.getElementById("loading-overlay");
+  if (overlay) overlay.hidden = true;
 }
 
 // ---- Login page ----
@@ -48,7 +96,7 @@ if (loginForm) {
     const password = document.getElementById("password").value;
 
     submitBtn.disabled = true;
-    setStatus(statusEl, "Connexion à COROS et récupération des données en cours (10-30s)...", "");
+    showLoading("Connexion à COROS et récupération des données en cours (10-30s)...");
 
     try {
       const resp = await fetch("/api/login", {
@@ -58,13 +106,35 @@ if (loginForm) {
       });
       const body = await resp.json();
       if (resp.ok && body.status === "ok") {
-        setStatus(statusEl, `${body.activity_count} activités récupérées. Redirection...`, "ok");
-        window.location.href = "/dashboard";
+        if (body.mcp_connected) {
+          // Already authorized via COROS MCP before — just go straight to the
+          // dashboard, which triggers its own background MCP refresh.
+          showLoading(`${body.activity_count} activités récupérées. Redirection...`);
+          window.location.href = "/dashboard?mcp_connected=1";
+          return;
+        }
+        // First time: chain straight into the MCP OAuth authorization so one
+        // button click covers both data sources, as COROS's consent screen
+        // needs a real page redirect (can't be done via background fetch).
+        showLoading(`${body.activity_count} activités récupérées. Connexion à COROS (MCP) pour le sommeil/stress/prédictions...`);
+        const mcpResp = await fetch("/api/mcp/login/start");
+        const mcpBody = await mcpResp.json();
+        if (mcpResp.ok && mcpBody.status === "ok") {
+          window.location.href = mcpBody.auth_url;
+        } else {
+          // Scraping succeeded — only the MCP half failed, so still go to the
+          // dashboard rather than stranding the user on the login page.
+          hideLoading();
+          setStatus(statusEl, `Données récupérées, mais connexion MCP impossible: ${mcpBody.message || "erreur inconnue"}. Tu peux réessayer depuis le dashboard.`, "error");
+          window.location.href = "/dashboard";
+        }
       } else {
+        hideLoading();
         setStatus(statusEl, body.message || "Erreur inconnue.", "error");
         submitBtn.disabled = false;
       }
     } catch (err) {
+      hideLoading();
       setStatus(statusEl, "Erreur réseau: " + err, "error");
       submitBtn.disabled = false;
     }
@@ -78,9 +148,13 @@ if (refreshBtn) {
 
   refreshBtn.addEventListener("click", async () => {
     refreshBtn.disabled = true;
-    setStatus(statusEl, "Rechargement des données...", "");
+    showLoading("Rechargement des données...");
     try {
-      const resp = await fetch("/api/refresh", { method: "POST" });
+      const [resp] = await Promise.all([
+        fetch("/api/refresh", { method: "POST" }),
+        // Best-effort: silently no-ops with a 401 if the user never connected via MCP.
+        fetch("/api/mcp/refresh", { method: "POST" }).catch(() => {}),
+      ]);
       const body = await resp.json();
       if (resp.ok && body.status === "ok") {
         setStatus(statusEl, `${body.activity_count} activités à jour.`, "ok");
@@ -91,40 +165,92 @@ if (refreshBtn) {
     } catch (err) {
       setStatus(statusEl, "Erreur réseau: " + err, "error");
     }
+    hideLoading();
     refreshBtn.disabled = false;
   });
 
   loadDashboard();
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const mcpError = urlParams.get("mcp_error");
+  if (mcpError) {
+    history.replaceState(null, "", window.location.pathname);
+    setStatus(statusEl, `Données scrapées à jour, mais connexion MCP échouée: ${mcpError}`, "error");
+  }
+
+  // Just connected via COROS MCP (see redirect in app.py's /api/mcp/callback):
+  // fetch the actual data now, in the background, rather than blocking the
+  // OAuth redirect on it (COROS's MCP server can take 8s+ per call).
+  if (urlParams.get("mcp_connected") === "1") {
+    history.replaceState(null, "", window.location.pathname);
+    setStatus(statusEl, "Connecté via COROS (MCP) — récupération du sommeil, stress, charge en cours...", "");
+    fetch("/api/mcp/refresh", { method: "POST" })
+      .then(resp => resp.json())
+      .then(async body => {
+        if (body.status === "ok") {
+          setStatus(statusEl, "Données MCP à jour (sommeil, stress, charge, prédicteur).", "ok");
+          await loadDashboard();
+        } else {
+          setStatus(statusEl, body.message || "Erreur lors de la récupération MCP.", "error");
+        }
+      })
+      .catch(err => setStatus(statusEl, "Erreur réseau (MCP): " + err, "error"));
+  }
 }
 
-// ---- Coach ----
-const coachBtn = document.getElementById("coach-digest-btn");
-if (coachBtn) {
-  const statusEl = document.getElementById("coach-status");
-  const outputEl = document.getElementById("coach-output");
-  const noteEl = document.getElementById("coach-note");
+// ---- Coach (persistent sidebar, chat-style — visible under any tab) ----
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s;
+  return div.innerHTML;
+}
 
-  coachBtn.addEventListener("click", async () => {
-    coachBtn.disabled = true;
-    outputEl.innerHTML = "";
-    setStatus(statusEl, "Démarrage du modèle local et analyse en cours (peut prendre 30-90s)...", "");
+const coachForm = document.getElementById("coach-form");
+if (coachForm) {
+  const chatEl = document.getElementById("coach-chat");
+  const statusEl = document.getElementById("coach-status");
+  const noteEl = document.getElementById("coach-note");
+  const submitBtn = document.getElementById("coach-digest-btn");
+
+  function appendMessage(role, html, extraClass) {
+    const div = document.createElement("div");
+    div.className = `chat-msg ${role}${extraClass ? " " + extraClass : ""}`;
+    div.innerHTML = html;
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return div;
+  }
+
+  coachForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const note = noteEl.value.trim();
+    submitBtn.disabled = true;
+
+    appendMessage("user", note ? escapeHtml(note) : "<em>Point coaching (14 derniers jours)</em>");
+    noteEl.value = "";
+    const pending = appendMessage("assistant", "En train d'analyser (peut prendre 30-90s)…", "pending");
+
     try {
       const resp = await fetch("/api/coach/weekly-digest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_note: noteEl.value.trim() }),
+        body: JSON.stringify({ user_note: note }),
       });
       const body = await resp.json();
+      pending.classList.remove("pending");
       if (resp.ok && body.status === "ok") {
-        setStatus(statusEl, "Terminé.", "ok");
-        outputEl.innerHTML = marked.parse(body.text);
+        pending.innerHTML = marked.parse(body.text);
       } else {
-        setStatus(statusEl, body.message || "Erreur inconnue.", "error");
+        pending.classList.add("error");
+        pending.textContent = body.message || "Erreur inconnue.";
       }
     } catch (err) {
-      setStatus(statusEl, "Erreur réseau: " + err, "error");
+      pending.classList.remove("pending");
+      pending.classList.add("error");
+      pending.textContent = "Erreur réseau: " + err;
     }
-    coachBtn.disabled = false;
+    chatEl.scrollTop = chatEl.scrollHeight;
+    submitBtn.disabled = false;
   });
 }
 
@@ -140,9 +266,17 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
 
 function formatPace(secPerKm) {
   if (!secPerKm) return "—";
-  const m = Math.floor(secPerKm / 60);
-  const s = Math.round(secPerKm % 60);
+  const total = Math.round(secPerKm);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
   return `${m}'${String(s).padStart(2, "0")}"`;
+}
+
+function parseDurationToSeconds(text) {
+  if (!text) return null;
+  const parts = text.split(":").map(Number);
+  if (parts.some(Number.isNaN)) return null;
+  return parts.reduce((acc, p) => acc * 60 + p, 0);
 }
 
 function formatDuration(sec) {
@@ -160,7 +294,7 @@ async function loadDashboard() {
   const data = await dataResp.json();
   const analyse = await analyseResp.json();
 
-  renderCards(data);
+  renderHeroStrip(data, analyse);
   renderLoadChart(data.daily);
   renderVo2Chart(data.daily);
   renderActivitiesTable(data.activities);
@@ -168,9 +302,9 @@ async function loadDashboard() {
   renderZoneTables(data);
   renderRendementChart(data.daily);
   renderWeeklyActivityChart(data.activities);
-  renderHrvDashboardWidget(analyse);
+  renderSleepTable(data);
   renderRecordsTable(data.activities);
-  renderPredictorTable(data.activities);
+  renderPredictorTable(data.activities, data.fitness_assessment);
 
   renderAnalyse(data, analyse);
 }
@@ -230,11 +364,19 @@ function renderRendementChart(daily) {
     type: "bar",
     data: {
       labels: last7.map((d, i) => i === last7.length - 1 ? "auj." : dayOfWeekLabel(d.happen_day)),
-      datasets: [{
-        label: "Rendement (%)",
-        data: last7.map(d => d.training_load_ratio != null ? Math.round(d.training_load_ratio * 100) : null),
-        backgroundColor: "#3fd6a8",
-      }],
+      datasets: [
+        {
+          label: "Rendement (%)",
+          data: last7.map(d => d.training_load_ratio != null ? Math.round(d.training_load_ratio * 100) : null),
+          backgroundColor: COLOR_ACCENT,
+          borderRadius: 4,
+          borderSkipped: false,
+        },
+        {
+          label: "Cible", type: "line", data: last7.map(() => 100),
+          borderColor: COLOR_COOL, borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0,
+        },
+      ],
     },
   });
 }
@@ -265,37 +407,59 @@ function renderWeeklyActivityChart(activities) {
     type: "bar",
     data: {
       labels: days.map(d => d.label),
-      datasets: [{ label: "Distance (km)", data: totals, backgroundColor: "#3fd6a8" }],
+      datasets: [{ label: "Distance (km)", data: totals, backgroundColor: COLOR_COOL, borderRadius: 4, borderSkipped: false }],
     },
   });
 }
 
-// ---- VFC nocturne (dashboard widget) ----
-function renderHrvDashboardWidget(analyse) {
-  const t7 = analyse?.t7dayList || [];
-  if (!t7.length) {
-    document.getElementById("hrv-dashboard-widget").innerHTML = "<p class='note'>Pas de données VFC disponibles.</p>";
+// ---- Sommeil & stress (MCP) ----
+function renderSleepTable(data) {
+  const sleep = data.sleep || [];
+  const noteEl = document.getElementById("sleep-note");
+  const tableEl = document.getElementById("sleep-table");
+
+  if (!sleep.length) {
+    noteEl.hidden = false;
+    tableEl.hidden = true;
     return;
   }
-  const latest = t7[t7.length - 1];
-  const interval = latest.sleepHrvIntervalList || [];
-  const [normalMin, normalMax] = interval.length >= 4 ? [interval[2], interval[3]] : [null, null];
-  const value = latest.avgSleepHrv;
+  noteEl.hidden = true;
+  tableEl.hidden = false;
 
-  let badge = "";
-  if (value != null && normalMin != null) {
-    if (value < normalMin) badge = `<span class="hrv-badge low">Réduite</span>`;
-    else if (value > normalMax) badge = `<span class="hrv-badge high">Élevée</span>`;
-    else badge = `<span class="hrv-badge normal">Normale</span>`;
-  }
+  const stressByDay = {};
+  for (const h of data.daily_health || []) stressByDay[h.day] = h.stress_avg;
 
-  document.getElementById("hrv-dashboard-widget").innerHTML = `
-    <div class="hrv-widget">
-      <div><div class="value">${value ?? "—"} ms</div><div class="label">Moy. dernière nuit</div></div>
-      ${normalMin != null ? `<div><div class="value">${normalMin}-${normalMax} ms</div><div class="label">Plage normale</div></div>` : ""}
-      ${badge}
-    </div>
-  `;
+  const toPill = cls => cls ? cls.replace("value-", "pill-") : "pill-neutral";
+
+  const phaseBar = (deep, light, rem) => {
+    if (deep == null && light == null && rem == null) return "—";
+    const d = Math.round((deep || 0) * 100), l = Math.round((light || 0) * 100), r = Math.round((rem || 0) * 100);
+    const total = (d + l + r) || 1;
+    return `
+      <div class="sleep-phase-cell">
+        <div class="sleep-phase-bar">
+          <span style="width:${d / total * 100}%;background:var(--cool-dark)"></span>
+          <span style="width:${l / total * 100}%;background:var(--cool)"></span>
+          <span style="width:${r / total * 100}%;background:var(--accent)"></span>
+        </div>
+        <span class="sleep-phase-legend">Profond ${d}% · Léger ${l}% · REM ${r}%</span>
+      </div>`;
+  };
+
+  const rows = sleep.slice(-7).reverse().map(s => {
+    const h = Math.floor((s.main_sleep_minutes || 0) / 60);
+    const m = (s.main_sleep_minutes || 0) % 60;
+    const stress = stressByDay[s.wake_day];
+    return `
+      <tr>
+        <td>${formatFullDate(s.wake_day)}</td>
+        <td><span class="pill ${toPill(scoreClass(s.sleep_score))}">${s.sleep_score ?? "—"}</span></td>
+        <td>${s.main_sleep_minutes ? `${h}h${String(m).padStart(2, "0")}` : "—"}</td>
+        <td>${phaseBar(s.deep_ratio, s.light_ratio, s.rem_ratio)}</td>
+        <td><span class="pill ${toPill(stressClass(stress))}">${stress ?? "—"}</span></td>
+      </tr>`;
+  }).join("");
+  document.querySelector("#sleep-table tbody").innerHTML = rows;
 }
 
 // ---- Records personnels ----
@@ -311,8 +475,8 @@ function renderRecordsTable(activities) {
     if (!items.length) continue;
     const longest = items.reduce((a, b) => (b.distance || 0) > (a.distance || 0) ? b : a);
     const climb = items.reduce((a, b) => (b.ascent || 0) > (a.ascent || 0) ? b : a);
-    rows.push([`${label} — distance la plus longue`, `${(longest.distance / 1000).toFixed(2)} km`, longest.name, longest.date]);
-    rows.push([`${label} — dénivelé max`, `${climb.ascent ?? 0} m`, climb.name, climb.date]);
+    rows.push([`${label} — distance la plus longue`, `${(longest.distance / 1000).toFixed(2)} km`, longest.name, formatFullDate(longest.date)]);
+    rows.push([`${label} — dénivelé max`, `${climb.ascent ?? 0} m`, climb.name, formatFullDate(climb.date)]);
   }
 
   document.querySelector("#records-table tbody").innerHTML = rows.map(([cat, rec, detail, date]) => `
@@ -320,8 +484,27 @@ function renderRecordsTable(activities) {
   `).join("") || "<tr><td colspan='4'>Pas assez de données sur 4 semaines.</td></tr>";
 }
 
-// ---- Prédicteur de course (Riegel) ----
-function renderPredictorTable(activities) {
+// ---- Prédicteur de course (COROS via MCP si connecté, sinon estimation Riegel) ----
+function renderPredictorTable(activities, fitnessAssessment) {
+  if (fitnessAssessment && (fitnessAssessment.pred_5k || fitnessAssessment.pred_10k)) {
+    document.getElementById("predictor-source").textContent = "modèle officiel COROS (via MCP)";
+    document.getElementById("predictor-note").textContent =
+      `Fourni directement par COROS. VO2max: ${fitnessAssessment.vo2max ?? "—"} | `
+      + `Allure au seuil: ${fitnessAssessment.threshold_pace ?? "—"}`;
+    const rows = [
+      ["5 km", fitnessAssessment.pred_5k, 5],
+      ["10 km", fitnessAssessment.pred_10k, 10],
+      ["Semi Marathon", fitnessAssessment.pred_half, 21.0975],
+      ["Marathon", fitnessAssessment.pred_marathon, 42.195],
+    ];
+    document.querySelector("#predictor-table tbody").innerHTML = rows.map(([d, t, distKm]) => {
+      const totalSec = parseDurationToSeconds(t);
+      const pace = totalSec ? formatPace(totalSec / distKm) : "—";
+      return `<tr><td>${d}</td><td>${t ?? "—"}</td><td>${pace}</td></tr>`;
+    }).join("");
+    return;
+  }
+
   const candidates = activities.filter(a => RUN_TYPES.includes(a.sport_type) && a.distance >= 3000 && a.total_time > 0);
   if (!candidates.length) {
     document.querySelector("#predictor-table tbody").innerHTML = "<tr><td colspan='3'>Pas d'activité de référence trouvée.</td></tr>";
@@ -348,21 +531,120 @@ function renderPredictorTable(activities) {
   `).join("");
 }
 
-function renderCards(data) {
+// COROS/Garmin-style stress convention: 0-25 rest, 26-50 low, 51-75 medium, 76-100 high.
+function stressClass(v) {
+  return v == null ? "" : v <= 50 ? "value-good" : v <= 75 ? "value-warn" : "value-bad";
+}
+function scoreClass(v) {
+  return v == null ? "" : v >= 85 ? "value-good" : v >= 70 ? "value-warn" : "value-bad";
+}
+
+function clampPct(v, min, max) {
+  if (v == null) return null;
+  return Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100));
+}
+
+// Simple 0→max fill bar, for scores that already have a natural scale (0-100 style).
+function gaugeSimple(value, max, color) {
+  const pct = clampPct(value, 0, max);
+  if (pct == null) return "";
+  return `<div class="gauge"><div class="gauge-fill" style="width:${pct}%;background:${color}"></div></div>`;
+}
+
+// A bar spanning [min,max] with a highlighted "good/normal" band and a marker at
+// the current value — for metrics where "where do I sit relative to a range"
+// matters more than an absolute 0-100 score.
+function gaugeBand(value, min, max, goodMin, goodMax, caption) {
+  const markerPct = clampPct(value, min, max);
+  if (markerPct == null) return "";
+  const bandStart = clampPct(goodMin, min, max);
+  const bandWidth = clampPct(goodMax, min, max) - bandStart;
+  return `
+    <div class="gauge">
+      <div class="gauge-band" style="left:${bandStart}%;width:${bandWidth}%"></div>
+      <div class="gauge-marker" style="left:${markerPct}%"></div>
+    </div>
+    ${caption ? `<div class="gauge-caption">${caption}</div>` : ""}
+  `;
+}
+
+// COROS doesn't test VO2max/resting-HR every single day — the very last row in
+// `daily` often has these as null. Look backwards for the last day that actually
+// has a value instead of showing a blank just because today wasn't tested.
+function lastNonNull(arr, field) {
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (arr[i][field] != null) return arr[i][field];
+  }
+  return null;
+}
+
+function renderHeroStrip(data, analyse) {
   const dash = data.dashboard.summaryInfo || {};
   const lastDay = data.daily.length ? data.daily[data.daily.length - 1] : {};
-  const cards = [
-    { label: "Nb activités", value: data.activities.length },
-    { label: "Niveau course à pied", value: dash.aerobicEnduranceScore ?? "—" },
-    { label: "VO2max", value: lastDay.vo2max ?? "—" },
-    { label: "FC repos", value: lastDay.test_rhr ?? "—" },
-    { label: "Fatigue (dernier jour)", value: lastDay.tired_rate ?? "—" },
+  const lastVo2max = lastNonNull(data.daily, "vo2max");
+  const lastRhr = lastNonNull(data.daily, "test_rhr");
+  const lastSleep = (data.sleep || []).length ? data.sleep[data.sleep.length - 1] : null;
+  const lastHealth = (data.daily_health || []).length ? data.daily_health[data.daily_health.length - 1] : null;
+
+  const t7 = analyse?.t7dayList || [];
+  const lastHrv = t7.length ? t7[t7.length - 1] : null;
+  const hrvInterval = lastHrv?.sleepHrvIntervalList || [];
+  const [hrvMin, hrvMax] = hrvInterval.length >= 4 ? [hrvInterval[2], hrvInterval[3]] : [null, null];
+  let hrvSub = "—";
+  if (lastHrv?.avgSleepHrv != null && hrvMin != null) {
+    hrvSub = lastHrv.avgSleepHrv < hrvMin ? "Réduite" : lastHrv.avgSleepHrv > hrvMax ? "Élevée" : "Normale";
+  }
+
+  const sleepDuration = lastSleep?.main_sleep_minutes
+    ? `${Math.floor(lastSleep.main_sleep_minutes / 60)}h${String(lastSleep.main_sleep_minutes % 60).padStart(2, "0")}`
+    : "—";
+
+  const ratioPct = lastDay.training_load_ratio != null ? Math.round(lastDay.training_load_ratio * 100) : null;
+
+  const tiles = [
+    { label: "Nb activités", value: data.activities.length, icon: "trendingUp" },
+    {
+      label: "Niveau course à pied", value: dash.aerobicEnduranceScore ?? "—", icon: "target",
+      gauge: gaugeSimple(dash.aerobicEnduranceScore, 100, "var(--accent)"),
+    },
+    {
+      label: "VO2max", value: lastVo2max ?? "—", icon: "bolt",
+      gauge: gaugeBand(lastVo2max, 25, 75, 45, 60, "repère générique — 45-60 = bon niveau"),
+    },
+    {
+      label: "FC repos", value: lastRhr ?? "—", sub: "bpm", icon: "pulse",
+      gauge: gaugeBand(lastRhr, 40, 100, 45, 65, "repère indicatif, sportif entraîné"),
+    },
+    { label: "Fatigue (dernier jour)", value: lastDay.tired_rate ?? "—", icon: "battery" },
+    {
+      label: "Rendement (aujourd'hui)", icon: "trendingUp",
+      value: ratioPct != null ? `${ratioPct}%` : "—",
+      gauge: gaugeBand(ratioPct, 50, 150, 80, 100, "cible ~100%"),
+    },
+    {
+      label: "Sommeil (dernière nuit)", value: lastSleep?.sleep_score ?? "—", icon: "moon", cool: true,
+      cls: scoreClass(lastSleep?.sleep_score), sub: sleepDuration,
+      gauge: gaugeSimple(lastSleep?.sleep_score, 100, "var(--cool)"),
+    },
+    {
+      label: "Stress (dernier jour)", value: lastHealth?.stress_avg ?? "—", icon: "wave", cool: true,
+      cls: stressClass(lastHealth?.stress_avg),
+      gauge: gaugeBand(lastHealth?.stress_avg, 0, 100, 0, 50, "bas = plus reposé"),
+    },
+    {
+      label: "VFC nocturne", icon: "pulse", cool: true,
+      value: lastHrv?.avgSleepHrv != null ? `${lastHrv.avgSleepHrv} ms` : "—", sub: hrvSub,
+      gauge: hrvMin != null ? gaugeBand(lastHrv.avgSleepHrv, hrvMin - 20, hrvMax + 20, hrvMin, hrvMax, "plage normale (COROS)") : "",
+    },
   ];
-  const container = document.getElementById("summary-cards");
-  container.innerHTML = cards.map(c => `
-    <div class="card">
-      <div class="label">${c.label}</div>
-      <div class="value">${c.value}</div>
+
+  document.getElementById("hero-cards").innerHTML = tiles.map(t => `
+    <div class="hero-card ${t.cool ? "cool" : ""}">
+      <div class="hero-icon">${ICONS[t.icon]}</div>
+      <div class="label">${t.label}</div>
+      <div class="value ${t.cls || ""}">${t.value}</div>
+      ${t.sub ? `<div class="sub">${t.sub}</div>` : ""}
+      ${t.gauge || ""}
     </div>
   `).join("");
 }
@@ -370,17 +652,26 @@ function renderCards(data) {
 let loadChartInstance = null;
 let vo2ChartInstance = null;
 
+// `daily` accumulates every day ever scraped (months/years of history), but these
+// two charts are titled "90 derniers jours" — without slicing, hundreds of bars
+// packed into one canvas visually merge into a solid mass that reads as a filled
+// curve rather than distinct bars.
+const CHART_WINDOW_DAYS = 90;
+
 function renderLoadChart(daily) {
+  const recent = daily.slice(-CHART_WINDOW_DAYS);
   const ctx = document.getElementById("load-chart");
   if (loadChartInstance) loadChartInstance.destroy();
   loadChartInstance = new Chart(ctx, {
     type: "bar",
     data: {
-      labels: daily.map(d => String(d.happen_day)),
+      labels: recent.map(d => formatChartDate(d.happen_day)),
       datasets: [{
         label: "Charge d'entraînement",
-        data: daily.map(d => d.training_load),
-        backgroundColor: "#3fd6a8",
+        data: recent.map(d => d.training_load),
+        backgroundColor: COLOR_ACCENT,
+        borderRadius: 4,
+        borderSkipped: false,
       }],
     },
     options: { scales: { x: { ticks: { maxTicksLimit: 12 } } } },
@@ -388,15 +679,22 @@ function renderLoadChart(daily) {
 }
 
 function renderVo2Chart(daily) {
+  const recent = daily.slice(-CHART_WINDOW_DAYS);
   const ctx = document.getElementById("vo2-chart");
   if (vo2ChartInstance) vo2ChartInstance.destroy();
   vo2ChartInstance = new Chart(ctx, {
     type: "line",
     data: {
-      labels: daily.map(d => String(d.happen_day)),
+      labels: recent.map(d => formatChartDate(d.happen_day)),
       datasets: [
-        { label: "VO2max", data: daily.map(d => d.vo2max), borderColor: "#3fd6a8", yAxisID: "y" },
-        { label: "FC repos", data: daily.map(d => d.test_rhr), borderColor: "#ff8080", yAxisID: "y1" },
+        {
+          label: "VO2max", data: recent.map(d => d.vo2max), borderColor: COLOR_COOL,
+          backgroundColor: "rgba(79, 214, 232, 0.12)", fill: true, yAxisID: "y", spanGaps: true, tension: 0.3,
+        },
+        {
+          label: "FC repos", data: recent.map(d => d.test_rhr), borderColor: COLOR_BAD,
+          yAxisID: "y1", spanGaps: true, tension: 0.3,
+        },
       ],
     },
     options: {
@@ -409,11 +707,13 @@ function renderVo2Chart(daily) {
   });
 }
 
-function renderActivitiesTable(activities) {
-  const tbody = document.querySelector("#activities-table tbody");
-  tbody.innerHTML = activities.map(a => `
+const ACTIVITIES_PREVIEW_COUNT = 15;
+let activitiesExpanded = false;
+
+function renderActivityRows(activities) {
+  return activities.map(a => `
     <tr>
-      <td>${a.date}</td>
+      <td>${formatFullDate(a.date)}</td>
       <td>${a.name}</td>
       <td>${(a.distance / 1000).toFixed(2)}</td>
       <td>${(a.total_time / 60).toFixed(0)}</td>
@@ -423,6 +723,27 @@ function renderActivitiesTable(activities) {
       <td>${a.device ?? "—"}</td>
     </tr>
   `).join("");
+}
+
+function renderActivitiesTable(activities) {
+  const tbody = document.querySelector("#activities-table tbody");
+  const toggleBtn = document.getElementById("activities-toggle-btn");
+
+  const showAll = activitiesExpanded || activities.length <= ACTIVITIES_PREVIEW_COUNT;
+  tbody.innerHTML = renderActivityRows(showAll ? activities : activities.slice(0, ACTIVITIES_PREVIEW_COUNT));
+
+  if (activities.length <= ACTIVITIES_PREVIEW_COUNT) {
+    toggleBtn.hidden = true;
+    return;
+  }
+  toggleBtn.hidden = false;
+  toggleBtn.textContent = activitiesExpanded
+    ? "Réduire"
+    : `Afficher les ${activities.length} activités`;
+  toggleBtn.onclick = () => {
+    activitiesExpanded = !activitiesExpanded;
+    renderActivitiesTable(activities);
+  };
 }
 
 // ---- Analyse tab ----
@@ -505,8 +826,11 @@ function renderAnalyse(data, analyse) {
   hrvChartInstance = new Chart(document.getElementById("hrv-chart"), {
     type: "line",
     data: {
-      labels: t7.map(d => String(d.happenDay)),
-      datasets: [{ label: "VFC nocturne (ms)", data: t7.map(d => d.avgSleepHrv || null), borderColor: "#3fd6a8", spanGaps: true }],
+      labels: t7.map(d => formatChartDate(d.happenDay)),
+      datasets: [{
+        label: "VFC nocturne (ms)", data: t7.map(d => d.avgSleepHrv || null), borderColor: COLOR_COOL,
+        backgroundColor: "rgba(79, 214, 232, 0.12)", fill: true, tension: 0.3, spanGaps: true,
+      }],
     },
     options: { scales: { x: { ticks: { maxTicksLimit: 8 } } } },
   });
@@ -517,10 +841,10 @@ function renderAnalyse(data, analyse) {
   weeklyLoadChartInstance = new Chart(document.getElementById("weekly-load-chart"), {
     type: "bar",
     data: {
-      labels: weeks.map(w => String(w.firstDayOfWeek)),
+      labels: weeks.map(w => formatChartDate(w.firstDayOfWeek)),
       datasets: [
-        { label: "Charge réalisée", data: weeks.map(w => w.value), backgroundColor: "#3fd6a8" },
-        { label: "Charge cible", data: weeks.map(w => w.target), type: "line", borderColor: "#ff8080", fill: false },
+        { label: "Charge réalisée", data: weeks.map(w => w.value), backgroundColor: COLOR_ACCENT, borderRadius: 4, borderSkipped: false },
+        { label: "Charge cible", data: weeks.map(w => w.target), type: "line", borderColor: COLOR_COOL, fill: false },
       ],
     },
   });
@@ -531,11 +855,11 @@ function renderAnalyse(data, analyse) {
   intensityChartInstance = new Chart(document.getElementById("intensity-chart"), {
     type: "bar",
     data: {
-      labels: intWeeks.map(w => String(w.firstDayOfWeek)),
+      labels: intWeeks.map(w => formatChartDate(w.firstDayOfWeek)),
       datasets: [
-        { label: "Intense", data: intWeeks.map(w => w.periodHighPct), backgroundColor: "#ff8080" },
-        { label: "Modérée", data: intWeeks.map(w => w.periodMediumPct), backgroundColor: "#f5c26b" },
-        { label: "Faible", data: intWeeks.map(w => w.periodLowPct), backgroundColor: "#3fd6a8" },
+        { label: "Intense", data: intWeeks.map(w => w.periodHighPct), backgroundColor: COLOR_BAD },
+        { label: "Modérée", data: intWeeks.map(w => w.periodMediumPct), backgroundColor: COLOR_WARN },
+        { label: "Faible", data: intWeeks.map(w => w.periodLowPct), backgroundColor: COLOR_GOOD },
       ],
     },
     options: { scales: { x: { stacked: true, ticks: { maxTicksLimit: 12 } }, y: { stacked: true } } },
@@ -550,7 +874,7 @@ function renderAnalyse(data, analyse) {
     type: "bar",
     data: {
       labels: paceZoneLabels,
-      datasets: [{ label: "Charge d'entraîn.", data: (analyse.summaryInfo?.tlAreaList || []).map(z => z.value), backgroundColor: "#3fd6a8" }],
+      datasets: [{ label: "Charge d'entraîn.", data: (analyse.summaryInfo?.tlAreaList || []).map(z => z.value), backgroundColor: COLOR_ACCENT, borderRadius: 4, borderSkipped: false }],
     },
   });
 
@@ -560,7 +884,7 @@ function renderAnalyse(data, analyse) {
     type: "bar",
     data: {
       labels: (analyse.summaryInfo?.distanceCountAreaList || []).map((_, i) => `Zone ${i + 1}`),
-      datasets: [{ label: "Fréquence", data: (analyse.summaryInfo?.distanceCountAreaList || []).map(z => z.value), backgroundColor: "#3fd6a8" }],
+      datasets: [{ label: "Fréquence", data: (analyse.summaryInfo?.distanceCountAreaList || []).map(z => z.value), backgroundColor: COLOR_COOL, borderRadius: 4, borderSkipped: false }],
     },
   });
 
@@ -573,7 +897,7 @@ function renderAnalyse(data, analyse) {
     type: "bar",
     data: {
       labels: hrZoneLabels,
-      datasets: [{ label: "Charge d'entraîn.", data: (analyse.summaryInfo?.hrTlAreaList || []).map(z => z.value), backgroundColor: "#3fd6a8" }],
+      datasets: [{ label: "Charge d'entraîn.", data: (analyse.summaryInfo?.hrTlAreaList || []).map(z => z.value), backgroundColor: COLOR_ACCENT, borderRadius: 4, borderSkipped: false }],
     },
   });
 }

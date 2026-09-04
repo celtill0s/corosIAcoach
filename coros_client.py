@@ -21,7 +21,10 @@ def login_and_get_token(email, password):
 
         page.get_by_placeholder("E-mail").fill(email)
         page.get_by_placeholder("Please enter password with 6-20 characters").fill(password)
-        page.locator(".arco-checkbox-icon").click()
+        # Scoped to .login-privacy-row: COROS added a second checkbox ("remember me",
+        # .login-remember-row) that also matches .arco-checkbox-icon, which made the
+        # bare selector ambiguous (Playwright strict-mode error).
+        page.locator(".login-privacy-row .arco-checkbox-icon").click()
 
         # The submit button stays disabled until Vue re-renders after the checkbox
         # click; clicking too early is a silent no-op, so wait for it to enable.
@@ -120,14 +123,6 @@ def fetch_cycle_record(session):
     return _get(session, "/dashboard/queryCycleRecord")
 
 
-def fetch_profile_private(session):
-    return _get(session, "/profile/private/query")
-
-
-def fetch_profile_public(session):
-    return _get(session, "/profile/public/query", {"type": 2, "language": "fr-FR", "releaseType": 1})
-
-
 def fetch_import_sport_list(session):
     return _get(session, "/activity/fit/getImportSportList")
 
@@ -142,7 +137,5 @@ def scrape_all(token, user_id, schedule_start, schedule_end):
         "analyse": fetch_analyse(session),
         "schedule": fetch_schedule(session, schedule_start, schedule_end),
         "schedule_summary": fetch_schedule_summary(session, schedule_start, schedule_end),
-        "profile_private": fetch_profile_private(session),
-        "profile_public": fetch_profile_public(session),
         "import_sport_list": fetch_import_sport_list(session),
     }

@@ -5,46 +5,60 @@ charge d'entraînement, VO2max, FC repos...) et les visualiser dans un dashboard
 
 ## Comment ça marche
 
-1. Tu ouvres la page de connexion et entres ton e-mail / mot de passe COROS.
-2. Le serveur lance un navigateur headless (Playwright + Firefox) qui se
-   connecte à `trainingeu.coros.com` à ta place, récupère le jeton de session,
-   puis interroge directement les APIs internes de COROS (`activity/query`,
-   `dashboard/query`, `analyse/query`, `training/schedule/query`).
-3. Les données sont enregistrées dans une base SQLite locale
-   (`data/coros_data.sqlite`).
-4. Tu es redirigé vers `/dashboard`, qui affiche les données depuis la base
-   sur deux onglets :
-   - **Tableau de bord** : cartes de synthèse, charge d'entraînement (90j),
-     VO2max/FC repos, rendement 7 jours, activité hebdomadaire, tableaux de
-     zones (FC seuil / allure seuil), VFC nocturne, records personnels
-     (course/vélo, dérivés des résumés d'activité), prédicteur de course
-     (estimation approximative via formule de Riegel — pas le modèle interne
-     COROS), et la liste des activités récentes.
-   - **Analyse des données** : réplique de l'onglet COROS du même nom (récap
-     4 semaines, charge/ratio d'achèvement 12 semaines, VO2max, FC repos,
-     charge hebdomadaire, distribution d'intensité, répartition par zones
-     d'allure/distance/FC).
+Un seul bouton de connexion enchaîne deux sources de données :
 
-Un bouton "Recharger les données" sur le dashboard relance le scraping sans
-redemander le mot de passe (le jeton de session est gardé le temps de la
-session navigateur).
+1. **Playwright + API interne COROS** (mot de passe) : le serveur lance un
+   navigateur headless (Playwright + Firefox) qui se connecte à
+   `trainingeu.coros.com` à ta place, récupère le jeton de session, puis
+   interroge directement les APIs internes de COROS (`activity/query`,
+   `dashboard/query`, `analyse/query`, `training/schedule/query`). C'est la
+   seule source pour l'onglet **Analyse des données**, les tables de zones
+   FC/allure, le dénivelé et l'appareil par activité — rien de tout ça n'est
+   exposé par le MCP officiel de COROS.
+2. **MCP officiel COROS** (`mcp.coros.com`, OAuth) : déclenché automatiquement
+   juste après, avec une redirection vers la page d'autorisation COROS (pas de
+   mot de passe pour cette partie). Apporte ce que l'API interne scrapée ne
+   fournit pas : sommeil détaillé, stress quotidien, VFC de référence
+   (`HRV Baseline`), et les vraies prédictions de course COROS (au lieu d'une
+   estimation Riegel maison). Voir `coros_mcp_auth.py` / `coros_mcp_client.py`
+   / `mcp_parsers.py`. Si cette étape échoue ou est annulée, les données
+   scrapées restent utilisables — seul un message d'erreur s'affiche sur le
+   dashboard, tu peux réessayer plus tard via "Recharger les données".
+
+Les deux sources enregistrent dans la même base SQLite locale
+(`data/coros_data.sqlite`) et se rechargent ensemble via le bouton "Recharger
+les données" du dashboard. Le dashboard affiche les données sur trois onglets :
+- **Tableau de bord** : cartes de synthèse, charge d'entraînement (90j),
+  VO2max/FC repos, rendement 7 jours, activité hebdomadaire, tableaux de
+  zones (FC seuil / allure seuil), VFC nocturne, records personnels
+  (course/vélo, dérivés des résumés d'activité), prédicteur de course (modèle
+  officiel COROS si connecté via MCP, sinon estimation Riegel), et la liste
+  des activités récentes.
+- **Analyse des données** : réplique de l'onglet COROS du même nom (récap
+  4 semaines, charge/ratio d'achèvement 12 semaines, VO2max, FC repos,
+  charge hebdomadaire, distribution d'intensité, répartition par zones
+  d'allure/distance/FC).
+- **Coach** : voir plus bas.
 
 ## Sécurité — pas de mot de passe stocké
 
 - Le mot de passe saisi dans le formulaire n'est **jamais écrit sur disque**.
   Il transite en mémoire le temps d'une requête HTTP (`POST /api/login`),
-  sert à la connexion Playwright, puis est jeté.
+  sert à la connexion Playwright, puis est jeté. La connexion MCP n'implique
+  aucun mot de passe côté app : uniquement un jeton OAuth stocké dans
+  `instance/mcp_tokens.json`.
 - Seul le jeton de session COROS (pas le mot de passe) est conservé, dans un
   cookie de session signé côté navigateur (`SECRET_KEY` généré une fois dans
   `instance/secret_key`, à ne pas partager).
-- Aucune donnée de sommeil n'est disponible via ce portail (Training Hub =
-  coaching/performance, pas l'app grand public) — si besoin, il faudra un
-  autre accès (API COROS Open ou export depuis l'app mobile).
+- Les URLs de téléchargement `.fit` renvoyées par le MCP (non utilisées dans
+  l'app actuellement) ne sont pas signées/expirantes — à ne jamais logger si
+  un jour exploitées.
 - Cette app est prévue pour un usage **local uniquement**
   (`127.0.0.1:5000`). Ne pas l'exposer sur internet telle quelle : le serveur
-  de dev Flask n'est pas fait pour la production, et le formulaire de login
+  de dev Flask n'est pas fait pour la production, le formulaire de login
   envoie le mot de passe en clair sur la connexion HTTP (sans souci en local,
-  risqué sur un réseau non fiable).
+  risqué sur un réseau non fiable), et le redirect URI OAuth du MCP est codé
+  en dur sur `127.0.0.1:5000`.
 
 ## Prise en main (nouvel utilisateur / nouvelle machine)
 
@@ -125,12 +139,15 @@ commentaire de coaching en retour.
 
 ```
 Coros/
-├── app.py              # Routes Flask (login, scraping, dashboard, API JSON)
-├── coros_client.py      # Connexion Playwright + appels aux APIs COROS
+├── app.py                # Routes Flask (login x2, scraping x2, dashboard, API JSON)
+├── coros_client.py       # Connexion Playwright + appels aux APIs internes COROS
+├── coros_mcp_auth.py     # OAuth 2.1 + PKCE vers le MCP officiel COROS (mcp.coros.com)
+├── coros_mcp_client.py   # Appel des tools MCP (JSON-RPC / Streamable HTTP)
+├── mcp_parsers.py        # Texte des tools MCP -> dicts typés pour db.py
 ├── db.py                 # Schéma et accès SQLite
 ├── coach.py               # Coach IA local (Ollama + Qwen2.5), accès strict à db.py
 ├── templates/
-│   ├── login.html        # Formulaire de connexion
+│   ├── login.html        # Formulaire de connexion + bouton MCP
 │   └── dashboard.html     # Page de visualisation
 ├── static/
 │   ├── style.css
@@ -138,13 +155,16 @@ Coros/
 ├── data/
 │   └── coros_data.sqlite # Base de données (créée au premier scraping)
 └── instance/
-    └── secret_key         # Clé de session Flask (générée automatiquement)
+    ├── secret_key         # Clé de session Flask (générée automatiquement)
+    ├── mcp_client.json    # Client OAuth MCP auto-enregistré (généré au 1er login MCP)
+    └── mcp_tokens.json    # Jetons OAuth MCP (généré à la connexion MCP)
 ```
 
 ## Base de données
 
-Quatre tables dans `data/coros_data.sqlite` :
+Dans `data/coros_data.sqlite`, deux groupes de tables selon la source :
 
+Alimentées par `coros_client.py` (Playwright / API interne) :
 - `activities` — une ligne par séance (date, distance, durée, FC moyenne,
   dénivelé, charge d'entraînement, appareil...), avec le JSON brut complet
   dans `raw_json` pour les champs non exposés en colonnes.
@@ -152,22 +172,37 @@ Quatre tables dans `data/coros_data.sqlite` :
   testée, ratio de charge, tendance de forme...).
 - `raw_snapshots` — blob JSON complet par endpoint (`dashboard`,
   `dashboard_detail`, `cycle_record`, `analyse`, `schedule`,
-  `schedule_summary`, `profile_private`, `profile_public`) : couvre
-  l'intégralité des données renvoyées par COROS, y compris les champs pas
-  encore exploités dans l'UI.
+  `schedule_summary`) : couvre l'intégralité des données renvoyées par COROS,
+  y compris les champs pas encore exploités dans l'UI. Contient aussi les
+  snapshots MCP (`mcp_fitness_assessment`, `mcp_devices`, `mcp_user_info`).
+
+Alimentées par `coros_mcp_client.py` (MCP officiel, si connecté) :
+- `sleep` — une ligne par nuit (score, durée, ratios profond/léger/REM,
+  fenêtre de sommeil), attribuée au jour de réveil.
+- `daily_health` — une ligne par jour (pas, calories, stress moyen, FC repos
+  et VFC de référence sur le jour le plus récent).
+- `training_load_daily` — une ligne par jour (commentaire COROS, charge
+  court/long terme, ratio de charge) — granularité différente de
+  `daily_analysis`, gardée séparée plutôt que fusionnée.
+
+Le parsing des tools MCP (texte pré-formaté, pas du JSON) est fait par
+regex dans `mcp_parsers.py` — aussi fragile qu'un changement de sélecteur
+Playwright, donc chaque ligne garde un `raw_text` en fallback.
 
 ## Limites connues
 
-- **Sommeil détaillé** (stades, durée) : absent de ce portail (Training Hub =
-  coaching/performance, pas l'app grand public).
 - **Records 1km/3km/5km/10km** : non calculables sans les données de
-  laps/splits par activité (non scrapées ici) — seuls "distance la plus
-  longue" et "dénivelé max" sont dérivés (des résumés d'activité).
-- **Prédicteur de course** : approximation par formule de Riegel à partir de
-  ta meilleure perf récente, pas le modèle propriétaire COROS — assez fiable
-  sur 5-10km, diverge davantage sur semi/marathon.
-- **Détail par activité** (tracé GPS, laps, zones seconde par seconde) : pas
-  scrapé (chantier séparé, ~252 appels supplémentaires).
+  laps/splits par activité — `queryActivityLapData` (MCP) les fournit en JSON
+  structuré mais n'est pas encore branché dans le dashboard.
+- **Prédicteur de course** : le vrai modèle COROS s'affiche si tu es connecté
+  via MCP ; sinon repli sur une estimation par formule de Riegel (moins fiable
+  sur semi/marathon).
+- **Détail par activité** (tracé GPS, laps, zones seconde par seconde) : les
+  tools MCP existent (`getActivityDetail`, `queryActivityLapData`,
+  `downloadActivityFitFiles`) mais ne sont pas encore exploités dans l'UI.
+- **URLs de FIT non signées** : `queryActivityFitFileDownloadUrls` (MCP)
+  renvoie une URL S3/CloudFront accessible sans jeton — à ne pas logger si
+  un jour utilisée.
 
 ## Pour la suite
 
@@ -177,4 +212,7 @@ Idées d'évolutions possibles sur cette base :
 - Filtres/sélecteurs de période sur le dashboard.
 - Export CSV depuis l'interface.
 - Détection et alerte sur les tendances (fatigue, charge trop élevée...).
-- Scraping du détail par activité si besoin des tracés/laps.
+- Brancher `queryActivityLapData` / `downloadActivityFitFiles` (MCP) dans
+  le dashboard pour les laps et le détail par activité.
+- Enrichir le coach IA avec les tools MCP additionnels non encore utilisés
+  (`queryRecoveryStatus`, `queryMenstruationCycles`, `queryStressTimeSeries`...).

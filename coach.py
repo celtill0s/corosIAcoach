@@ -49,7 +49,8 @@ Règles strictes :
 Méthode de travail — fais ça avant de répondre :
 1. Sous le titre "## Analyse" (visible), passe en revue chaque signal un par un (charge et
    ratio de charge jour par jour, tendance de la fatigue, VO2max, FC repos, activités notables,
-   ressenti rapporté s'il y en a un) et note ce que chacun indique isolément.
+   sommeil et stress quotidien si disponibles, ressenti rapporté s'il y en a un) et note ce que
+   chacun indique isolément.
 2. Croise ensuite ces signaux : est-ce qu'ils se confirment ou se contredisent ? Quel est le
    signal le plus fiable si conflit ?
 3. Seulement après cette analyse, écris ta réponse finale sous le titre exact "## Réponse".
@@ -132,6 +133,24 @@ def _build_weekly_context():
             f"- {a['date']} \"{a['name']}\" (catégorie: {category}): {a['distance'] / 1000:.1f} km, "
             f"{a['total_time'] // 60} min, FC moy {a['avg_hr']}, charge {a['training_load']}"
         )
+
+    # Sourced from the COROS MCP connection (coros_mcp_client.py) — only present if
+    # the user connected via "Se connecter via COROS (MCP)" on the login page.
+    sleep = [s for s in data.get("sleep", []) if s["wake_day"] >= start_day]
+    if sleep:
+        lines.append("\nSommeil, 14 derniers jours (nuit attribuée au jour de réveil) :")
+        for s in sleep:
+            lines.append(
+                f"- {s['wake_day']}: score={s['sleep_score']}, durée={s['main_sleep_minutes']} min, "
+                f"profond={int((s['deep_ratio'] or 0) * 100)}%, léger={int((s['light_ratio'] or 0) * 100)}%, "
+                f"REM={int((s['rem_ratio'] or 0) * 100)}%"
+            )
+
+    health = [h for h in data.get("daily_health", []) if h["day"] >= start_day]
+    if health:
+        lines.append("\nStress quotidien (moyenne journalière), 14 derniers jours :")
+        for h in health:
+            lines.append(f"- {h['day']}: stress_moyen={h['stress_avg']}")
 
     return "\n".join(lines)
 

@@ -3,3 +3,4 @@ data/*.sqlite
 instance/
 __pycache__/
 *.pyc
+preview_data.js
